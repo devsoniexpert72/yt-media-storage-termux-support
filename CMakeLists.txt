@@ -40,3 +40,5 @@ target_link_libraries(media_storage PRIVATE
         PkgConfig::SWRESAMPLE
         OpenMP::OpenMP_CXX
 )
+
+target_compile_options(media_storage PRIVATE -march=native)

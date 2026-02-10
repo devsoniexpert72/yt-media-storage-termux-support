@@ -5,6 +5,7 @@
 #include <array>
 #include <iostream>
 #include <stdexcept>
+#include <cstring>
 
 constexpr double PI = 3.14159265358979323846;
 
@@ -90,7 +91,7 @@ VideoEncoder::~VideoEncoder() {
         try { finalize(); } catch (...) {
         }
     }
-    if (sws_ctx) sws_free_context(&sws_ctx);
+    if (sws_ctx) sws_freeContext(sws_ctx);
     if (av_packet) av_packet_free(&av_packet);
     if (frame) av_frame_free(&frame);
     if (codec_ctx) avcodec_free_context(&codec_ctx);
