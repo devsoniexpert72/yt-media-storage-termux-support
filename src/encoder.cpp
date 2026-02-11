@@ -43,13 +43,17 @@ static uint32_t computeRepairCount(const uint32_t numSource, const double overhe
     return static_cast<uint32_t>(std::ceil(repairDouble));
 }
 
-static uint8_t buildFlags(const uint32_t blockId, const uint32_t numSource, const bool isLastChunk) {
+static uint8_t buildFlags(const uint32_t blockId, const uint32_t numSource, const bool isLastChunk,
+                          const bool encrypted) {
     uint8_t flags = None;
     if (blockId > numSource) {
         flags |= IsRepairSymbol;
     }
     if (isLastChunk) {
         flags |= LastChunk;
+    }
+    if (encrypted) {
+        flags |= Encrypted;
     }
     return flags;
 }
@@ -105,7 +109,8 @@ std::pair<std::vector<Packet>, ChunkManifestEntry>
 Encoder::encode_chunk(
     const uint32_t chunk_index,
     const std::span<const std::byte> chunk_data,
-    const bool is_last_chunk) const {
+    const bool is_last_chunk,
+    const bool encrypted) const {
     ensureWirehairInit();
 
     if (chunk_data.size() > CHUNK_SIZE_BYTES) {
@@ -162,7 +167,7 @@ Encoder::encode_chunk(
             throw std::runtime_error("wirehair_encode() failed");
         }
 
-        const uint8_t flags = buildFlags(blockId, numSource, is_last_chunk);
+        const uint8_t flags = buildFlags(blockId, numSource, is_last_chunk, encrypted);
         const auto payloadLen = static_cast<uint16_t>(writeLen);
 
         std::vector<std::byte> header = create_packet_header(

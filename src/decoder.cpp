@@ -1,6 +1,7 @@
 #include "decoder.h"
 
 #include "configuration.h"
+#include "crypto.h"
 #include "libs/wirehair/wirehair.h"
 
 #include <algorithm>
@@ -245,6 +246,7 @@ std::optional<ChunkDecodeResult> Decoder::process_packet(const std::span<const s
     const PacketHeader &hdr = parsed->header;
     if (!id) {
         id = hdr.file_id;
+        encrypted_ = (hdr.flags & Encrypted) != 0;
     }
 
     if (completed_chunks.contains(hdr.chunk_index)) {
@@ -287,6 +289,7 @@ std::optional<ChunkDecodeResult> Decoder::process_packet(const DecodedPacket &pa
     const PacketHeader &hdr = packet.header;
     if (!id) {
         id = hdr.file_id;
+        encrypted_ = (hdr.flags & Encrypted) != 0;
     }
 
     if (completed_chunks.contains(hdr.chunk_index)) {
@@ -340,7 +343,12 @@ std::vector<uint32_t> Decoder::completed_chunk_indices() const {
     return indices;
 }
 
-std::optional<std::vector<std::byte> > Decoder::assemble_file(const uint32_t expected_chunks) const {
+void Decoder::set_decrypt_key(std::span<const std::byte, 32> key) {
+    std::memcpy(decrypt_key_.data(), key.data(), 32);
+    decrypt_key_set_ = true;
+}
+
+std::optional<std::vector<std::byte>> Decoder::assemble_file(const uint32_t expected_chunks) const {
     if (completed_chunks.size() != expected_chunks) {
         return std::nullopt;
     }
@@ -351,16 +359,21 @@ std::optional<std::vector<std::byte> > Decoder::assemble_file(const uint32_t exp
         }
     }
 
-    size_t total_size = 0;
-    for (uint32_t i = 0; i < expected_chunks; ++i) {
-        total_size += completed_chunks.at(i).size();
+    if (encrypted_ && !decrypt_key_set_) {
+        return std::nullopt;
+    }
+
+    if (!id) {
+        return std::nullopt;
     }
 
     std::vector<std::byte> result;
-    result.reserve(total_size);
     for (uint32_t i = 0; i < expected_chunks; ++i) {
-        const auto &chunk = completed_chunks.at(i);
-        result.insert(result.end(), chunk.begin(), chunk.end());
+        std::vector<std::byte> chunk_data = completed_chunks.at(i);
+        if (encrypted_ && decrypt_key_set_) {
+            chunk_data = decrypt_chunk(chunk_data, decrypt_key_, *id, i);
+        }
+        result.insert(result.end(), chunk_data.begin(), chunk_data.end());
     }
 
     return result;

@@ -1,5 +1,7 @@
 #include "drive_manager_ui.h"
 #include "chunker.h"
+#include "configuration.h"
+#include "crypto.h"
 #include "encoder.h"
 #include "decoder.h"
 #include "video_encoder.h"
@@ -19,8 +21,10 @@
 #include <QDateTime>
 #include <fstream>
 
-WorkerThread::WorkerThread(Operation op, const QString& input, const QString& output, QObject* parent)
-    : QThread(parent), operation(op), inputPath(input), outputPath(output) {
+WorkerThread::WorkerThread(Operation op, const QString& input, const QString& output,
+                         bool encrypt, const QString& password, QObject* parent)
+    : QThread(parent), operation(op), inputPath(input), outputPath(output),
+      encrypt(encrypt), password(password) {
 }
 
 void WorkerThread::run() {
@@ -38,11 +42,15 @@ void WorkerThread::run() {
             emit logMessage(QString("Input size: %1 bytes").arg(input_size));
             
             emit progressUpdated(10);
-            const auto chunked = chunkFile(inputPath.toStdString().c_str());
+            const std::size_t chunk_size = encrypt ? CHUNK_SIZE_PLAIN_MAX_ENCRYPTED : 0;
+            const auto chunked = chunkFile(inputPath.toStdString().c_str(), chunk_size);
             const std::size_t num_chunks = chunked.chunks.size();
             emit logMessage(QString("Created %1 chunks").arg(num_chunks));
             
             emit progressUpdated(30);
+            if (encrypt) {
+                emit logMessage("Encrypting chunks with password");
+            }
             const std::array<std::byte, 16> file_id = []{
                 std::array<std::byte, 16> id{};
                 for (int i = 0; i < 16; ++i) {
@@ -51,14 +59,27 @@ void WorkerThread::run() {
                 return id;
             }();
             
+            std::array<std::byte, CRYPTO_KEY_BYTES> key{};
+            if (encrypt) {
+                const std::string pw = password.toStdString();
+                const std::span<const std::byte> pw_span(reinterpret_cast<const std::byte*>(pw.data()), pw.size());
+                key = derive_key(pw_span, file_id);
+            }
+            
             const Encoder encoder(file_id);
             std::vector<std::vector<Packet>> all_chunk_packets(num_chunks);
             
             emit statusUpdated("Encoding chunks...");
             for (int i = 0; i < static_cast<int>(num_chunks); ++i) {
-                const auto chunk_data = chunkSpan(chunked, static_cast<std::size_t>(i));
+                auto chunk_data = chunkSpan(chunked, static_cast<std::size_t>(i));
+                std::span<const std::byte> data_to_encode = chunk_data;
+                std::vector<std::byte> encrypted_buf;
+                if (encrypt) {
+                    encrypted_buf = encrypt_chunk(chunk_data, key, file_id, static_cast<uint32_t>(i));
+                    data_to_encode = encrypted_buf;
+                }
                 const bool is_last = (i == static_cast<int>(num_chunks) - 1);
-                auto [chunk_packets, manifest] = encoder.encode_chunk(static_cast<uint32_t>(i), chunk_data, is_last);
+                auto [chunk_packets, manifest] = encoder.encode_chunk(static_cast<uint32_t>(i), data_to_encode, is_last, encrypt);
                 all_chunk_packets[i] = std::move(chunk_packets);
                 
                 int progress = 30 + (60 * (i + 1) / static_cast<int>(num_chunks));
@@ -167,9 +188,21 @@ void WorkerThread::run() {
                 return;
             }
             
+            if (decoder.is_encrypted()) {
+                emit logMessage("Decrypting content with password");
+                if (password.isEmpty()) {
+                    emit operationCompleted(false, "Content is encrypted. Please enter the password.");
+                    return;
+                }
+                const std::string pw = password.toStdString();
+                const std::span<const std::byte> pw_span(reinterpret_cast<const std::byte*>(pw.data()), pw.size());
+                const auto key = derive_key(pw_span, *decoder.file_id());
+                decoder.set_decrypt_key(key);
+            }
+            
             auto assembled = decoder.assemble_file(expected_chunks);
             if (!assembled) {
-                emit operationCompleted(false, "Failed to assemble file from decoded chunks");
+                emit operationCompleted(false, "Failed to assemble file (wrong password or corrupted data)");
                 return;
             }
             
@@ -243,13 +276,22 @@ void DriveManagerUI::setupUI() {
     selectOutputButton = new QPushButton("Browse...");
     fileOpsLayout->addWidget(selectOutputButton, 1, 2);
     
+    encryptCheckBox = new QCheckBox("Encrypt with password");
+    fileOpsLayout->addWidget(encryptCheckBox, 2, 0, 1, 3);
+    
+    fileOpsLayout->addWidget(new QLabel("Password:"), 3, 0);
+    passwordEdit = new QLineEdit();
+    passwordEdit->setPlaceholderText("For encrypt or decrypt");
+    passwordEdit->setEchoMode(QLineEdit::Password);
+    fileOpsLayout->addWidget(passwordEdit, 3, 1, 1, 2);
+    
     encodeButton = new QPushButton("Encode to Video");
     encodeButton->setIcon(QIcon::fromTheme("media-record"));
-    fileOpsLayout->addWidget(encodeButton, 2, 0, 1, 3);
+    fileOpsLayout->addWidget(encodeButton, 4, 0, 1, 3);
     
     decodeButton = new QPushButton("Decode from Video");
     decodeButton->setIcon(QIcon::fromTheme("media-playback-start"));
-    fileOpsLayout->addWidget(decodeButton, 3, 0, 1, 3);
+    fileOpsLayout->addWidget(decodeButton, 5, 0, 1, 3);
     
     leftLayout->addWidget(fileOperationsGroup);
     
@@ -421,13 +463,19 @@ void DriveManagerUI::startEncode() {
         return;
     }
     
+    const bool encrypt = encryptCheckBox->isChecked();
+    if (encrypt && passwordEdit->text().isEmpty()) {
+        QMessageBox::warning(this, "Warning", "Password required when encrypting");
+        return;
+    }
+    
     isOperationRunning = true;
     currentOperation = "Encoding";
     encodeButton->setEnabled(false);
     decodeButton->setEnabled(false);
     
     workerThread = std::make_unique<WorkerThread>(WorkerThread::Encode, 
-        inputFileEdit->text(), outputFileEdit->text(), this);
+        inputFileEdit->text(), outputFileEdit->text(), encrypt, passwordEdit->text(), this);
     
     connect(workerThread.get(), &WorkerThread::progressUpdated, 
         this, &DriveManagerUI::onProgressUpdated);
@@ -457,7 +505,7 @@ void DriveManagerUI::startDecode() {
     decodeButton->setEnabled(false);
     
     workerThread = std::make_unique<WorkerThread>(WorkerThread::Decode, 
-        inputFileEdit->text(), outputFileEdit->text(), this);
+        inputFileEdit->text(), outputFileEdit->text(), false, passwordEdit->text(), this);
     
     connect(workerThread.get(), &WorkerThread::progressUpdated, 
         this, &DriveManagerUI::onProgressUpdated);

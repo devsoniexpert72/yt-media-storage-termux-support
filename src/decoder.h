@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "integrity.h"
+#include "configuration.h"
 
 struct PacketHeader {
     uint32_t magic = 0;
@@ -101,8 +102,15 @@ public:
 
     [[nodiscard]] std::optional<std::vector<std::byte>> assemble_file(uint32_t expected_chunks) const;
 
+    void set_decrypt_key(std::span<const std::byte, 32> key);
+
+    [[nodiscard]] bool is_encrypted() const { return encrypted_; }
+
 private:
     std::optional<FileId> id;
+    bool encrypted_ = false;
+    std::array<std::byte, 32> decrypt_key_{};
+    bool decrypt_key_set_ = false;
     std::map<uint32_t, ChunkDecoder> active_decoders;
     std::map<uint32_t, std::vector<std::byte>> completed_chunks;
     size_t total_packets_ = 0;

@@ -29,7 +29,8 @@ public:
     explicit Encoder(FileId file_id);
 
     [[nodiscard]] std::pair<std::vector<Packet>, ChunkManifestEntry>
-    encode_chunk(uint32_t chunk_index, std::span<const std::byte> chunk_data, bool is_last_chunk) const;
+    encode_chunk(uint32_t chunk_index, std::span<const std::byte> chunk_data, bool is_last_chunk,
+                bool encrypted = false) const;
 
     [[nodiscard]] const FileId &file_id() const { return id; }
 

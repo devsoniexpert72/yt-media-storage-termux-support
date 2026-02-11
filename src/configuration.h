@@ -13,6 +13,8 @@ const std::string VIDEO_CONTAINER = "mkv";
 
 // Encoding Parameters
 constexpr size_t CHUNK_SIZE_BYTES = 1024ull * 1024ull; // 1 MiB
+constexpr size_t CRYPTO_AEAD_TAG_BYTES = 16;
+inline constexpr size_t CHUNK_SIZE_PLAIN_MAX_ENCRYPTED = CHUNK_SIZE_BYTES - 4 - CRYPTO_AEAD_TAG_BYTES;
 constexpr size_t SYMBOL_SIZE_BYTES = 256;
 constexpr double REPAIR_OVERHEAD = 3.00;
 constexpr bool INCLUDE_SOURCE = true;
@@ -23,6 +25,7 @@ enum Flags : uint8_t {
     None = 0,
     IsRepairSymbol = 1 << 0,
     LastChunk = 1 << 1,
+    Encrypted = 1 << 2,
 };
 
 // Header Scheme
